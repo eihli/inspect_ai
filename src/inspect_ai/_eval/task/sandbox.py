@@ -1,5 +1,6 @@
 import base64
 import contextlib
+from logging import getLogger
 from random import random
 from typing import AsyncGenerator, Callable, NamedTuple, cast
 
@@ -23,6 +24,7 @@ from inspect_ai.dataset import Sample
 from inspect_ai.util._concurrency import concurrency
 from inspect_ai.util._sandbox.context import (
     cleanup_sandbox_environments_sample,
+    cleanup_sandbox_failed_init,
     init_sandbox_environments_sample,
 )
 from inspect_ai.util._sandbox.environment import (
@@ -31,6 +33,8 @@ from inspect_ai.util._sandbox.environment import (
     SandboxEnvironmentSpec,
 )
 from inspect_ai.util._sandbox.registry import registry_find_sandboxenv
+
+logger = getLogger(__name__)
 
 
 @contextlib.asynccontextmanager
@@ -98,14 +102,28 @@ async def sandboxenv_context(
                 setup=setup,
                 metadata=sample.metadata if sample.metadata else {},
             )
-
+        except Exception as ex:
+            # If there's an exception during initialization,
+            # we might be in a half-initialized state. Our
+            # classical cleanup path requires an environment,
+            # which we won't have. So, we take this different
+            # route for cleanup of half-initialized environments.
+            # cleanup sandbox environment
+            logger.warning(
+                f"Exception during init. {ex}. Cleaning up half-initialized sandbox."
+            )
+            await cleanup_sandbox_failed_init(
+                type=sandbox.type,
+                task_name=task_name,
+                config=sandbox.config,
+            )
+            raise
+        try:
             # run sample
             yield
-
         except anyio.get_cancelled_exc_class() as ex:
             interrupted = True
             raise ex
-
         finally:
             # cleanup sandbox environment
             if environments and cleanup:

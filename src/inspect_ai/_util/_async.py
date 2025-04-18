@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+from logging import getLogger
 import os
 import sys
 from logging import Logger
@@ -15,6 +16,7 @@ else:
     from exceptiongroup import ExceptionGroup
     from typing_extensions import TypeVarTuple, Unpack
 
+logger = getLogger(__name__)
 
 PosArgsT = TypeVarTuple("PosArgsT")
 
@@ -51,25 +53,30 @@ async def tg_collect(
        ExceptionGroup: Exceptions that occurred in failed tasks
          (for `exception_group == True`)
     """
-    try:
-        results: list[tuple[int, T]] = []
+    results: list[tuple[int, T]] = []
+    exceptions: list[Exception] = []
 
-        async with anyio.create_task_group() as tg:
+    async with anyio.create_task_group() as tg:
 
-            async def run_task(index: int) -> None:
+        async def run_task(index: int) -> None:
+            try:
                 result = await funcs[index]()
                 results.append((index, result))
+            except Exception as ex:
+                results.append((index, ex))
+                exceptions.append(ex)
 
-            for i in range(0, len(funcs)):
-                tg.start_soon(run_task, i)
+        for i in range(0, len(funcs)):
+            tg.start_soon(run_task, i)
 
-        # sort results by original index and return just the values
-        return [r for _, r in sorted(results)]
-    except ExceptionGroup as ex:
+    if exceptions:
         if exception_group:
-            raise
+            raise ExceptionGroup("Errors in async tasks", exceptions)
         else:
-            raise ex.exceptions[0]
+            raise exceptions[0]
+
+    # sort results by original index and return just the values
+    return [r for _, r in sorted(results)]
 
 
 async def coro_print_exceptions(
